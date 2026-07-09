@@ -5,7 +5,8 @@
 This guide covers rebuilding all Argo CD container images on a UBI9 base, pushing them to an
 internal registry, and deploying via the official Argo CD Helm chart with image overrides.
 
-- **Source Code:** https://github.com/argoproj/argo-cd
+- **Source Code (UBI9 fork):** https://github.com/vaibhavvsk/argo-cd/tree/v3.4.4_ubi9
+- **Upstream Source Code:** https://github.com/argoproj/argo-cd
 - **Helm Chart:** https://github.com/argoproj/argo-helm/tree/main/charts/argo-cd
 - **Version:** `v3.4.4`
 - **UBI9 Dockerfile:** [`Dockerfile.ubi9`](../Dockerfile.ubi9)
@@ -65,10 +66,28 @@ These are **separate images** not part of the Argo CD binary, each requiring an 
 
 See [`Dockerfile.ubi9`](../Dockerfile.ubi9) for the full build definition. Tool versions (Helm, Kustomize, git-lfs) are pinned in [`hack/tool-versions.sh`](../hack/tool-versions.sh).
 
+**Option A — via `make` (using Makefile image naming variables):**
+
+> Note: The [`Makefile`](../Makefile) `image` target does not support a `DOCKER_FILE` variable.
+> Use `IMAGE_NAMESPACE`, `IMAGE_REPOSITORY`, and `IMAGE_TAG` to control the output image name,
+> then pass `-f Dockerfile.ubi9` by overriding the `DOCKER` variable with a wrapper.
+> The simplest approach is Option B below for UBI9 builds.
+
+```bash
+# Override DOCKER to inject -f Dockerfile.ubi9 transparently
+make image \
+  DOCKER="docker buildx build --load -f Dockerfile.ubi9" \
+  IMAGE_TAG=v3.4.4_ubi9 \
+  IMAGE_NAMESPACE=registry.company.com/argocd \
+  IMAGE_REPOSITORY=argocd
+```
+
+**Option B — direct `docker build` (recommended for UBI9):**
+
 ```bash
 DOCKER_BUILDKIT=1 docker build \
   -f Dockerfile.ubi9 \
-  -t registry.company.com/argocd/argocd:v3.4.4-ubi9 \
+  -t registry.company.com/argocd/argocd:v3.4.4_ubi9 \
   --platform linux/amd64 \
   --build-arg GIT_TAG=v3.4.4 \
   .
