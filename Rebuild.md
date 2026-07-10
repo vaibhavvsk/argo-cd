@@ -9,7 +9,8 @@ internal registry, and deploying via the official Argo CD Helm chart with image 
 - **Upstream Source Code:** https://github.com/argoproj/argo-cd
 - **Helm Chart:** https://github.com/argoproj/argo-helm/tree/main/charts/argo-cd
 - **Version:** `v3.4.4`
-- **UBI9 Dockerfile:** [`Dockerfile.ubi9`](../Dockerfile.ubi9)
+- **UBI9 Dockerfile (server):** [`Dockerfile.ubi9`](../Dockerfile.ubi9)
+- **UBI9 Dockerfile (CLI):** [`Dockerfile.cli.ubi9`](../Dockerfile.cli.ubi9)
 - **Tool Versions:** [`hack/tool-versions.sh`](../hack/tool-versions.sh)
 
 ---
@@ -62,13 +63,81 @@ These are **separate images** not part of the Argo CD binary, each requiring an 
 
 ## Build Instructions
 
-### 1. Build the Argo CD Image
+### 0. Build the Argo CD Binary (Optional — local verification)
+
+Before building the container image you can compile and verify the `argocd` binary directly on your machine:
+
+```bash
+make BIN_NAME=argocd-linux-amd64 GOOS=linux GOARCH=amd64 argocd-all
+```
+
+Output binary: `dist/argocd-linux-amd64`
+
+**Sample output:**
+
+```
+$ ./dist/argocd-linux-amd64 version
+argocd: v3.4.4+cfd9e76
+  BuildDate: 2026-07-10T05:20:27Z
+  GitCommit: cfd9e76783c3cfad473296157acb594099dc042a
+  GitTreeState: clean
+  GoVersion: go1.26.0
+  Compiler: gc
+  Platform: linux/amd64
+{"level":"fatal","msg":"Argo CD server address unspecified","time":"2026-07-10T05:30:35Z"}
+```
+
+> **Note:** The `fatal` log at the end is expected — `argocd version` also tries to reach a live server for the server-side version. The binary itself is working correctly; the client-side version is printed first.
+
+Other platform targets available via `argocd-all`:
+
+| `BIN_NAME` | `GOOS` | `GOARCH` |
+|---|---|---|
+| `argocd-linux-amd64` | `linux` | `amd64` |
+| `argocd-linux-arm64` | `linux` | `arm64` |
+| `argocd-darwin-amd64` | `darwin` | `amd64` |
+| `argocd-darwin-arm64` | `darwin` | `arm64` |
+| `argocd-windows-amd64.exe` | `windows` | `amd64` |
+
+---
+
+### Makefile Variables Reference
+
+Both image targets require explicit Dockerfile parameters. The variables and their defaults are:
+
+| Variable | Default | Used by |
+|---|---|---|
+| `DOCKERFILE` | `Dockerfile` | `make image` |
+| `CLI_DOCKERFILE` | `Dockerfile.cli.ubi9` | `make cli-image` |
+| `IMAGE_TAG` | `latest` (or git tag if on a tag) | both |
+| `IMAGE_REGISTRY` | `quay.io` | both |
+| `IMAGE_NAMESPACE` | `argoproj` | both |
+
+Always pass `DOCKERFILE` / `CLI_DOCKERFILE` explicitly to avoid accidentally building with the wrong (default Ubuntu-based) Dockerfile.
+
+---
+
+### 1. Build the Argo CD Server Image
 
 See [`Dockerfile.ubi9`](../Dockerfile.ubi9) for the full build definition. Tool versions (Helm, Kustomize, git-lfs) are pinned in [`hack/tool-versions.sh`](../hack/tool-versions.sh).
 
 ```bash
 make image DOCKERFILE=Dockerfile.ubi9 IMAGE_TAG=v3.4.4_ubi9
 ```
+
+Output: `quay.io/argoproj/argocd:v3.4.4_ubi9`
+
+### 1a. Build the Argo CD CLI Image (optional)
+
+See [`Dockerfile.cli.ubi9`](../Dockerfile.cli.ubi9). Produces a minimal UBI9 image with only the `argocd` CLI binary — no UI assets, no server-side tools. Builds independently from the server image.
+
+```bash
+make cli-image CLI_DOCKERFILE=Dockerfile.cli.ubi9 IMAGE_TAG=v3.4.4_ubi9
+```
+
+Output: `quay.io/argoproj/argocd-cli:v3.4.4_ubi9`
+
+> **Note:** The first build compiles Go from scratch and may take several minutes. Subsequent builds reuse Docker layer cache — only the source compile step re-runs on code changes.
 
 ### 2. Build Redis on UBI9
 
@@ -98,9 +167,10 @@ docker build -f Dockerfile.haproxy-ubi9 \
 
 ```bash
 docker push registry.company.com/argocd/argocd:v3.4.4-ubi9
+docker push registry.company.com/argocd/argocd-cli:v3.4.4-ubi9  # if CLI image built
 docker push registry.company.com/argocd/redis:8.2.3-ubi9
-docker push registry.company.com/argocd/dex:v2.45.0-ubi9     # if SSO enabled
-docker push registry.company.com/argocd/haproxy:3.0.8-ubi9   # if HA
+docker push registry.company.com/argocd/dex:v2.45.0-ubi9        # if SSO enabled
+docker push registry.company.com/argocd/haproxy:3.0.8-ubi9      # if HA
 ```
 
 ---
@@ -173,6 +243,18 @@ docker run --rm $IMAGE argocd-repo-server --help
 docker run --rm $IMAGE argocd-application-controller --help
 docker run --rm $IMAGE argocd-applicationset-controller --help
 docker run --rm $IMAGE argocd-notifications-controller --help
+```
+
+### Verify the CLI image
+
+```bash
+CLI_IMAGE=registry.company.com/argocd/argocd-cli:v3.4.4-ubi9
+
+# Should print client-side version (fatal log at end is expected — no server running)
+docker run --rm $CLI_IMAGE version
+
+# Should print help text
+docker run --rm $CLI_IMAGE --help
 ```
 
 ### Verify base OS is UBI9

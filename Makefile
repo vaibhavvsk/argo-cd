@@ -165,6 +165,8 @@ PATH:=$(PATH):$(PWD)/hack
 # docker image publishing options
 DOCKER_PUSH?=false
 IMAGE_NAMESPACE?=
+DOCKERFILE?=Dockerfile
+CLI_DOCKERFILE?=Dockerfile.cli.ubi9
 # perform static compilation
 DEFAULT_STATIC_BUILD:=true
 ifeq ($(IS_DARWIN),true)
@@ -373,9 +375,17 @@ image: build-ui
 	DOCKER_BUILDKIT=1 $(DOCKER) build --platform=$(TARGET_ARCH) -t $(IMAGE_PREFIX)$(IMAGE_REPOSITORY):$(IMAGE_TAG) -f dist/Dockerfile.dev dist
 else
 image:
-	DOCKER_BUILDKIT=1 $(DOCKER) build -t $(IMAGE_PREFIX)$(IMAGE_REPOSITORY):$(IMAGE_TAG) --platform=$(TARGET_ARCH) .
+	DOCKER_BUILDKIT=1 $(DOCKER) build -f $(DOCKERFILE) -t $(IMAGE_PREFIX)$(IMAGE_REPOSITORY):$(IMAGE_TAG) --platform=$(TARGET_ARCH) .
 endif
 	@if [ "$(DOCKER_PUSH)" = "true" ] ; then $(DOCKER) push $(IMAGE_PREFIX)$(IMAGE_REPOSITORY):$(IMAGE_TAG) ; fi
+
+# Build the argocd CLI-only image (no UI, no server-side tools)
+# Usage: make cli-image CLI_DOCKERFILE=Dockerfile.cli.ubi9 IMAGE_TAG=v3.4.4_ubi9
+# → quay.io/argoproj/argocd-cli:v3.4.4_ubi9
+.PHONY: cli-image
+cli-image:
+	DOCKER_BUILDKIT=1 $(DOCKER) build -f $(CLI_DOCKERFILE) -t $(IMAGE_PREFIX)argocd-cli:$(IMAGE_TAG) --platform=$(TARGET_ARCH) .
+	@if [ "$(DOCKER_PUSH)" = "true" ] ; then $(DOCKER) push $(IMAGE_PREFIX)argocd-cli:$(IMAGE_TAG) ; fi
 
 .PHONY: armimage
 armimage:
