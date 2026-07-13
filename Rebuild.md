@@ -137,7 +137,7 @@ make cli-image CLI_DOCKERFILE=Dockerfile.cli.ubi9 IMAGE_TAG=v3.4.4_ubi9
 
 Output: `quay.io/argoproj/argocd-cli:v3.4.4_ubi9`
 
-> **Note:** The first build compiles Go from scratch and may take several minutes. Subsequent builds reuse Docker layer cache — only the source compile step re-runs on code changes.
+> **Note:** Go is pulled from the official `golang:1.26.0` Docker image (no external `wget`) so the first build is reliable in restricted network environments. Subsequent builds reuse Docker layer cache — only the source compile step re-runs on code changes.
 
 ### 2. Build Redis on UBI9
 
