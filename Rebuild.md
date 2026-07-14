@@ -103,29 +103,82 @@ Other platform targets available via `argocd-all`:
 
 ### Makefile Variables Reference
 
-Both image targets require explicit Dockerfile parameters. The variables and their defaults are:
-
 | Variable | Default | Used by |
 |---|---|---|
 | `DOCKERFILE` | `Dockerfile` | `make image` |
 | `CLI_DOCKERFILE` | `Dockerfile.cli.ubi9` | `make cli-image` |
-| `IMAGE_TAG` | `latest` (or git tag if on a tag) | both |
-| `IMAGE_REGISTRY` | `quay.io` | both |
-| `IMAGE_NAMESPACE` | `argoproj` | both |
-
-Always pass `DOCKERFILE` / `CLI_DOCKERFILE` explicitly to avoid accidentally building with the wrong (default Ubuntu-based) Dockerfile.
+| `IMAGE_TAG` | `latest` (or git tag if on a tag) | all image targets |
+| `IMAGE_REGISTRY` | `quay.io` | all image targets |
+| `IMAGE_NAMESPACE` | `argoproj` | all image targets |
+| `TARGETOS` | `linux` | `make docker-build` |
+| `TARGETARCH` | `amd64` | `make docker-build` |
 
 ---
 
 ### 1. Build the Argo CD Server Image
 
-See [`Dockerfile.ubi9`](../Dockerfile.ubi9) for the full build definition. Tool versions (Helm, Kustomize, git-lfs) are pinned in [`hack/tool-versions.sh`](../hack/tool-versions.sh).
+The dedicated UBI9 build target is `docker-build`. It uses [`Dockerfile.ubi9`](../Dockerfile.ubi9) and passes `TARGETOS`/`TARGETARCH` as build args. Tool versions (Helm, Kustomize, git-lfs) are pinned in [`hack/tool-versions.sh`](../hack/tool-versions.sh).
 
 ```bash
-make image DOCKERFILE=Dockerfile.ubi9 IMAGE_TAG=v3.4.4_ubi9
+# Default build — linux/amd64, tagged quay.io/argoproj/argocd:latest
+make docker-build
+
+# With an explicit image tag
+make docker-build IMAGE_TAG=v3.4.4_ubi9
 ```
 
 Output: `quay.io/argoproj/argocd:v3.4.4_ubi9`
+
+#### Cross-architecture builds
+
+Override `TARGETARCH` (and optionally `TARGETOS`) at call time:
+
+```bash
+# arm64
+make docker-build TARGETARCH=arm64 IMAGE_TAG=v3.4.4_ubi9
+
+# ppc64le
+make docker-build TARGETARCH=ppc64le IMAGE_TAG=v3.4.4_ubi9
+```
+
+#### All overridable variables
+
+```bash
+make docker-build \
+  TARGETARCH=amd64 \
+  TARGETOS=linux \
+  IMAGE_TAG=v3.4.4_ubi9 \
+  IMAGE_NAMESPACE=myorg \
+  IMAGE_REGISTRY=registry.company.com
+```
+
+> **Alternative (legacy):** `make image DOCKERFILE=Dockerfile.ubi9 IMAGE_TAG=v3.4.4_ubi9` — uses the generic `image` target but requires passing `DOCKERFILE` explicitly to avoid building the default Ubuntu-based image.
+
+#### Network requirements
+
+The build pulls from these external endpoints — all must be reachable from the build host:
+
+| Stage | Endpoint | What it fetches |
+|---|---|---|
+| `builder`, `argocd-build` | `dl.google.com` | Go 1.26.0 tarball |
+| `argocd-ui` | `nodejs.org` | Node.js 23.0.0 tarball |
+| `argocd-ui` | `registry.yarnpkg.com` | UI npm dependencies |
+| `argocd-build` | `proxy.golang.org` / `sum.golang.org` | Go module dependencies |
+| all `dnf` stages | `cdn.redhat.com` | UBI9 BaseOS + AppStream RPMs |
+
+> **dnf tuning:** All `dnf` calls in `Dockerfile.ubi9` use `--disablerepo='*' --enablerepo='ubi-9-baseos-rpms,ubi-9-appstream-rpms'` to restrict to UBI9 public repos only, plus `--setopt=minrate=1 --setopt=timeout=30` to fail fast on stalled connections instead of hanging indefinitely.
+
+> **curl-minimal:** `ubi9/ubi` and `ubi9/ubi-minimal` ship `curl-minimal` which conflicts with the full `curl` package — do not add `curl` to any `dnf`/`microdnf` install list in this Dockerfile.
+
+#### Build stage summary
+
+| Stage | Base image | Purpose |
+|---|---|---|
+| `builder` | `ubi9/ubi:9.8-1782841664` | Builds Helm, Kustomize, git-lfs binaries |
+| `argocd-base` | `ubi9/ubi-minimal:9.8-1782797275` | Runtime base — packages, tini, user setup |
+| `argocd-ui` | `ubi9/ubi:9.8-1782841664` | Builds UI assets (Node 23.0.0 via tarball) |
+| `argocd-build` | `ubi9/ubi:9.8-1782841664` | Compiles Argo CD Go binary |
+| final | `argocd-base` | Assembles runtime image |
 
 ### 1a. Build the Argo CD CLI Image (optional)
 
@@ -137,7 +190,7 @@ make cli-image CLI_DOCKERFILE=Dockerfile.cli.ubi9 IMAGE_TAG=v3.4.4_ubi9
 
 Output: `quay.io/argoproj/argocd-cli:v3.4.4_ubi9`
 
-> **Note:** Go is pulled from the official `golang:1.26.0` Docker image (no external `wget`) so the first build is reliable in restricted network environments. Subsequent builds reuse Docker layer cache — only the source compile step re-runs on code changes.
+> **Note:** Go is downloaded from `dl.google.com` (mirrors `go.dev/dl`) to avoid network restrictions. Subsequent builds reuse Docker layer cache — only the source compile step re-runs on code changes.
 
 ### 2. Build Redis on UBI9
 
@@ -233,16 +286,32 @@ redis-ha:
 
 ## Validate Rebuilt Images
 
+### Verify UI assets are embedded
+
+The UI is compiled into the `argocd` binary via Go's `//go:embed` directive — there are no UI files on disk in the final image. Validate by checking the binary size and confirming the embedded path is accessible:
+
+```bash
+IMAGE=quay.io/argoproj/argocd:latest
+
+# Binary with UI embedded is typically >100 MB; without UI it would be ~50 MB
+docker run --rm --entrypoint sh $IMAGE -c "ls -lh /usr/local/bin/argocd"
+
+# Confirm the embedded UI file list is non-empty (Go embed exposes dist/app at runtime)
+docker run --rm --entrypoint sh $IMAGE -c \
+  "argocd version --client 2>/dev/null | head -5"
+# Expected: prints argocd client version — confirms binary is healthy
+```
+
 ### Verify all Argo CD component binaries are present
 
 ```bash
-IMAGE=registry.company.com/argocd/argocd:v3.4.4-ubi9
+IMAGE=quay.io/argoproj/argocd:latest
 
-docker run --rm $IMAGE argocd-server --help
-docker run --rm $IMAGE argocd-repo-server --help
-docker run --rm $IMAGE argocd-application-controller --help
-docker run --rm $IMAGE argocd-applicationset-controller --help
-docker run --rm $IMAGE argocd-notifications-controller --help
+docker run --rm --entrypoint argocd-server $IMAGE --help
+docker run --rm --entrypoint argocd-repo-server $IMAGE --help
+docker run --rm --entrypoint argocd-application-controller $IMAGE --help
+docker run --rm --entrypoint argocd-applicationset-controller $IMAGE --help
+docker run --rm --entrypoint argocd-notifications-controller $IMAGE --help
 ```
 
 ### Verify the CLI image

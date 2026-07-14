@@ -20,6 +20,8 @@ HOST_OS:=$(shell go env GOOS)
 HOST_ARCH:=$(shell go env GOARCH)
 
 TARGET_ARCH?=linux/amd64
+TARGETOS?=linux
+TARGETARCH?=amd64
 
 VERSION=$(shell cat ${CURRENT_DIR}/VERSION)
 BUILD_DATE:=$(if $(BUILD_DATE),$(BUILD_DATE),$(shell date -u +'%Y-%m-%dT%H:%M:%SZ'))
@@ -386,6 +388,11 @@ endif
 cli-image:
 	DOCKER_BUILDKIT=1 $(DOCKER) build -f $(CLI_DOCKERFILE) -t $(IMAGE_PREFIX)argocd-cli:$(IMAGE_TAG) --platform=$(TARGET_ARCH) .
 	@if [ "$(DOCKER_PUSH)" = "true" ] ; then $(DOCKER) push $(IMAGE_PREFIX)argocd-cli:$(IMAGE_TAG) ; fi
+
+.PHONY: docker-build
+docker-build:
+	@echo "$(DOCKER) buildx build -f Dockerfile.ubi9 -t $(IMAGE_PREFIX)$(IMAGE_REPOSITORY):$(IMAGE_TAG) --build-arg TARGETARCH=$(TARGETARCH) --build-arg TARGETOS=$(TARGETOS) ."
+	$(DOCKER) buildx build -f Dockerfile.ubi9 -t $(IMAGE_PREFIX)$(IMAGE_REPOSITORY):$(IMAGE_TAG) --build-arg TARGETARCH=$(TARGETARCH) --build-arg TARGETOS=$(TARGETOS) .
 
 .PHONY: armimage
 armimage:
