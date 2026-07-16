@@ -1,0 +1,92 @@
+####################################################################################################
+# Argo CD CLI — UBI9 image
+#
+# Produces a minimal image containing only the argocd CLI binary.
+# Independent of "make image" — no UI assets, no server-side tools.
+#
+# Build:
+#   make docker-build IMAGE_TAG=v3.1.9_ubi9
+#   # → argocd-cli:v3.1.9_ubi9
+#
+# Run:
+#   docker run --rm argocd-cli:v3.1.9_ubi9 version
+#   docker run --rm argocd-cli:v3.1.9_ubi9 --help
+####################################################################################################
+
+####################################################################################################
+# Build stage — compiles the argocd binary on UBI9
+# Layers are ordered coarse-to-fine so Docker cache is reused across rebuilds:
+#   1. OS packages     — changes only when base image updates
+#   2. Go toolchain    — changes only when Go version bumps
+#   3. Go module deps  — changes only when go.sum changes
+#   4. Source + build  — changes on every code change
+####################################################################################################
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi9/ubi:9.8-1782841664 AS argocd-build
+
+# 1. OS packages
+RUN dnf install -y \
+    --setopt=install_weak_deps=False \
+    --disablerepo='*' \
+    --enablerepo='ubi-9-baseos-rpms,ubi-9-appstream-rpms' \
+    --setopt=minrate=1 \
+    --setopt=timeout=30 \
+    git \
+    make \
+    gcc \
+    wget \
+    tar \
+    gzip && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf
+
+# 2. Go toolchain — downloaded from Google's CDN (same approach as Dockerfile.ubi9)
+ARG BUILDARCH=amd64
+RUN wget -q "https://dl.google.com/go/go1.24.6.linux-${BUILDARCH}.tar.gz" -O /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH=/go
+ENV GOCACHE=/tmp/go-build
+
+WORKDIR /go/src/github.com/argoproj/argo-cd
+
+# 3. Go module dependencies (cached until go.sum changes)
+COPY go.* ./
+RUN go mod download
+
+# 4. Source + build (UI assets not needed for the CLI binary)
+COPY . .
+ARG TARGETOS \
+    TARGETARCH
+ARG GIT_TAG \
+    BUILD_DATE \
+    GIT_TREE_STATE \
+    GIT_COMMIT
+RUN GIT_COMMIT=$GIT_COMMIT \
+    GIT_TREE_STATE=$GIT_TREE_STATE \
+    GIT_TAG=$GIT_TAG \
+    BUILD_DATE=$BUILD_DATE \
+    GOOS=$TARGETOS \
+    GOARCH=$TARGETARCH \
+    make argocd-all
+
+####################################################################################################
+# Final image — minimal UBI9 with only the argocd CLI binary
+####################################################################################################
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8-1782797275
+
+LABEL org.opencontainers.image.source="https://github.com/argoproj/argo-cd"
+LABEL org.opencontainers.image.description="Argo CD CLI (UBI9)"
+
+# ca-certificates required for TLS connections to the Argo CD server
+RUN microdnf install -y --setopt=install_weak_deps=0 \
+    ca-certificates && \
+    microdnf clean all && \
+    rm -rf /var/cache/dnf
+
+COPY --from=argocd-build /go/src/github.com/argoproj/argo-cd/dist/argocd /usr/local/bin/argocd
+
+USER 65534
+
+ENTRYPOINT ["/usr/local/bin/argocd"]
